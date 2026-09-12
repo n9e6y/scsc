@@ -33,3 +33,8 @@ go.work.sum
 .DS_Store
 READMEAGAIN.md
 Stage.md
+#binary
+semcode
+
+# local search index
+.semcode/
