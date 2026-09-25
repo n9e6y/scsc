@@ -32,9 +32,10 @@ go.work.sum
 .vscode/
 .DS_Store
 READMEAGAIN.md
-Stage.md
-#binary
-semcode
+STAGE.md
+CLAUDE.md
+# binary (anchored to repo root so it doesn't also ignore cmd/semcode/)
+/semcode
 
 # local search index
 .semcode/
