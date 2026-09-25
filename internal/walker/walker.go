@@ -39,11 +39,16 @@ func Walk(root string, validExts []string) ([]string, error) {
 		}
 
 		if d.IsDir() {
+			// Never skip the root itself: a root like ".." or "./.hidden-repo" would
+			// otherwise trip the hidden-directory rule and index nothing.
+			if path == root {
+				return nil
+			}
 			if commonIgnores[d.Name()] {
 				return filepath.SkipDir
 			}
 			// Skip hidden directories (like .idea, .vscode)
-			if strings.HasPrefix(d.Name(), ".") && d.Name() != "." {
+			if strings.HasPrefix(d.Name(), ".") {
 				return filepath.SkipDir
 			}
 			return nil
