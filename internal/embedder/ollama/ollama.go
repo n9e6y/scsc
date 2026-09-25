@@ -20,10 +20,16 @@ import (
 // instead of waiting on each request in turn.
 const maxConcurrentRequests = 8
 
+// ProviderName is the name this embedder is selected by.
+const ProviderName = "ollama"
+
 type OllamaEmbedder struct {
 	baseURL string
 	model   string
 	client  *http.Client
+
+	mu   sync.Mutex
+	dims int // learned from the first successful response; 0 until then
 }
 
 type embedRequest struct {
@@ -50,14 +56,23 @@ func New(baseURL, model string) *OllamaEmbedder {
 	}
 }
 
+// Provider fulfills the Embedder interface.
+func (o *OllamaEmbedder) Provider() string {
+	return ProviderName
+}
+
 // Model fulfills the Embedder interface.
 func (o *OllamaEmbedder) Model() string {
 	return o.model
 }
 
-// Dimensions provides a default for nomic-embed-text if known, otherwise 0.
+// Dimensions returns the vector size seen in the first successful response.
+// It is learned rather than hardcoded because it depends on the model
+// (768 for nomic-embed-text, 1024 for mxbai-embed-large, ...).
 func (o *OllamaEmbedder) Dimensions() int {
-	return 768 // nomic-embed-text dimension
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.dims
 }
 
 // Embed fans requests out across a small worker pool since the standard
@@ -94,6 +109,14 @@ func (o *OllamaEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 		return nil, err
 	}
 
+	if len(results) > 0 {
+		o.mu.Lock()
+		if o.dims == 0 {
+			o.dims = len(results[0])
+		}
+		o.mu.Unlock()
+	}
+
 	return results, nil
 }
 
@@ -127,6 +150,9 @@ func (o *OllamaEmbedder) embedOne(ctx context.Context, url, text string) ([]floa
 	var resData embedResponse
 	if err := json.NewDecoder(resp.Body).Decode(&resData); err != nil {
 		return nil, fmt.Errorf("failed to decode ollama response: %w", err)
+	}
+	if len(resData.Embedding) == 0 {
+		return nil, fmt.Errorf("ollama returned an empty embedding (is %q an embedding model?)", o.model)
 	}
 
 	return resData.Embedding, nil

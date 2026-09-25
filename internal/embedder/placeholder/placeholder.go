@@ -10,6 +10,9 @@ import (
 	"strings"
 )
 
+// ProviderName is the name this embedder is selected by.
+const ProviderName = "placeholder"
+
 // PlaceholderEmbedder implements embedder.Embedder.
 type PlaceholderEmbedder struct {
 	dimensions int
@@ -20,6 +23,11 @@ func New() *PlaceholderEmbedder {
 	return &PlaceholderEmbedder{
 		dimensions: 256, // Keep it small for fast local testing
 	}
+}
+
+// Provider returns the provider name.
+func (p *PlaceholderEmbedder) Provider() string {
+	return ProviderName
 }
 
 // Model returns the mock model name.
