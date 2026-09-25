@@ -1,11 +1,14 @@
-// internal/store/gob_store_test.go
+// File: internal/store/gobStore_test.go
 package store
 
 import (
+	"encoding/gob"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"semcode/internal/chunker"
 )
@@ -92,5 +95,71 @@ func TestGobStore_EndToEnd(t *testing.T) {
 	}
 	if !almostEqual(results[2].Score, 0.0, 0.001) {
 		t.Errorf("Expected score ~ 0.0, got %f", results[2].Score)
+	}
+}
+
+func TestGobStore_MetaRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.gob")
+	meta := IndexMeta{
+		Provider:       "ollama",
+		Model:          "nomic-embed-text",
+		Dims:           3,
+		ChunkerVersion: "ast-v1",
+		IndexedAt:      time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC),
+	}
+
+	s := NewGobStore()
+	s.SetMeta(meta)
+	if err := s.Add([]Record{{Chunk: chunker.Chunk{ID: "a"}, Vector: []float32{1, 0, 0}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(path); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded := NewGobStore()
+	if err := loaded.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Meta(); !got.IndexedAt.Equal(meta.IndexedAt) || got.Provider != meta.Provider ||
+		got.Model != meta.Model || got.Dims != meta.Dims || got.ChunkerVersion != meta.ChunkerVersion {
+		t.Fatalf("meta round-trip: got %+v, want %+v", got, meta)
+	}
+}
+
+func TestGobStore_DimensionMismatchIsAnError(t *testing.T) {
+	s := NewGobStore()
+	_ = s.Add([]Record{{Chunk: chunker.Chunk{ID: "a"}, Vector: []float32{1, 0, 0}}})
+
+	if _, err := s.Search([]float32{1, 0}, 5); err == nil {
+		t.Fatal("expected an error when the query has different dimensions than the index")
+	}
+}
+
+func TestGobStore_LoadMissingFileIsEmpty(t *testing.T) {
+	s := NewGobStore()
+	if err := s.Load(filepath.Join(t.TempDir(), "nope.gob")); err != nil {
+		t.Fatalf("missing file should load as empty, got %v", err)
+	}
+	if s.Meta().Provider != "" {
+		t.Fatal("missing file should have empty meta")
+	}
+}
+
+func TestGobStore_LoadOutdatedFormat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.gob")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The pre-versioning format was a bare []Record.
+	if err := gob.NewEncoder(f).Encode([]Record{{Chunk: chunker.Chunk{ID: "old"}, Vector: []float32{1}}}); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	err = NewGobStore().Load(path)
+	if err == nil || !strings.Contains(err.Error(), "re-run 'semcode index'") {
+		t.Fatalf("expected an outdated-index error, got %v", err)
 	}
 }

@@ -7,9 +7,6 @@ import (
 
 	"semcode/internal/chunker"
 	"semcode/internal/embedder"
-	"semcode/internal/embedder/external"
-	"semcode/internal/embedder/ollama"
-	"semcode/internal/embedder/placeholder"
 	"semcode/internal/indexer"
 	"semcode/internal/store"
 )
@@ -25,24 +22,12 @@ func newIndexCmd() *cobra.Command {
 				dir = args[0]
 			}
 
-			// 1. Initialize the correct Embedder based on global flags (defined in root.go)
-			var embedEngine embedder.Embedder
-			var err error
-
-			switch providerFlag {
-			case "ollama":
-				fmt.Printf("🧠 Using local Ollama model: %s\n", ollamaModel)
-				embedEngine = ollama.New(ollamaURL, ollamaModel)
-			case "external":
-				fmt.Println("☁️ Using external API...")
-				embedEngine, err = external.New("", "OPENAI_API_KEY", "text-embedding-3-small")
-			default:
-				fmt.Println("🧪 Using placeholder embedder...")
-				embedEngine = placeholder.New()
-			}
+			// 1. Initialize the Embedder based on global flags (defined in root.go)
+			embedEngine, err := embedder.New(providerFlag, embedderOptions())
 			if err != nil {
 				return fmt.Errorf("failed to initialize embedder: %w", err)
 			}
+			fmt.Printf("Using %s embedder (model %s)\n", embedEngine.Provider(), embedEngine.Model())
 
 			// 2. Initialize Chunker and Store
 			chunkEngine := chunker.NewSymbolChunker(100)
@@ -51,8 +36,7 @@ func newIndexCmd() *cobra.Command {
 			// 3. Initialize and Run Orchestrator
 			orchestrator := indexer.New(chunkEngine, embedEngine, dbStore)
 
-			fmt.Printf("Starting indexing for %s using [%s] provider...\n", dir, providerFlag)
-			if err := orchestrator.Run(cmd.Context(), dir); err != nil {
+			if err := orchestrator.Run(cmd.Context(), dir, resolveIndexPath(dir)); err != nil {
 				return fmt.Errorf("indexing failed: %w", err)
 			}
 

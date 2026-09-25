@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
+	"time"
 
 	"semcode/internal/chunker"
 	"semcode/internal/embedder"
@@ -28,8 +28,8 @@ func New(c chunker.Chunker, e embedder.Embedder, s store.Store) *Indexer {
 	}
 }
 
-// Run executes the indexing pipeline over a given directory.
-func (i *Indexer) Run(ctx context.Context, dir string) error {
+// Run executes the indexing pipeline over dir and saves the index to indexPath.
+func (i *Indexer) Run(ctx context.Context, dir, indexPath string) error {
 	fmt.Printf("Starting indexing pipeline for: %s\n", dir)
 
 	// 1. Walk the directory to find target files (e.g., just .go files for now)
@@ -58,6 +58,10 @@ func (i *Indexer) Run(ctx context.Context, dir string) error {
 		allChunks = append(allChunks, chunks...)
 	}
 
+	if len(allChunks) == 0 {
+		return fmt.Errorf("no .go code found to index under %s", dir)
+	}
+
 	fmt.Printf("Extracted %d chunks in total. Embedding now...\n", len(allChunks))
 
 	// 3. Batch process embeddings (Batch size of 100 to avoid API limits)
@@ -84,6 +88,9 @@ func (i *Indexer) Run(ctx context.Context, dir string) error {
 		if err != nil {
 			return fmt.Errorf("failed to embed batch: %w", err)
 		}
+		if len(vectors) != len(batch) {
+			return fmt.Errorf("embedder returned %d vectors for %d chunks", len(vectors), len(batch))
+		}
 
 		// 5. Combine chunks and vectors into Store Records
 		for k, vec := range vectors {
@@ -96,17 +103,23 @@ func (i *Indexer) Run(ctx context.Context, dir string) error {
 		fmt.Printf("Embedded %d/%d chunks...\n", end, len(allChunks))
 	}
 
-	// 6. Save to Store
+	// 6. Save to Store, recording how the index was built so search can refuse
+	// a query embedded with a different model. Dims come from the actual vectors.
 	if err := i.store.Add(finalRecords); err != nil {
 		return fmt.Errorf("failed to add records to store: %w", err)
 	}
+	i.store.SetMeta(store.IndexMeta{
+		Provider:       i.embedder.Provider(),
+		Model:          i.embedder.Model(),
+		Dims:           len(finalRecords[0].Vector),
+		ChunkerVersion: i.chunker.Version(),
+		IndexedAt:      time.Now().UTC(),
+	})
 
-	// Create default path if it doesn't exist
-	dbPath := filepath.Join(dir, ".semcode", "index.gob")
-	if err := i.store.Save(dbPath); err != nil {
+	if err := i.store.Save(indexPath); err != nil {
 		return fmt.Errorf("failed to save store to disk: %w", err)
 	}
 
-	fmt.Printf("Successfully indexed repo to %s\n", dbPath)
+	fmt.Printf("Successfully indexed repo to %s\n", indexPath)
 	return nil
 }

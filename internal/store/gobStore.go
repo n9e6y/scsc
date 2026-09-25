@@ -1,4 +1,4 @@
-// File: internal/store/gob_store.go
+// File: internal/store/gobStore.go
 // Description: In-memory store that persists to disk via encoding/gob and performs brute-force vector search.
 
 package store
@@ -13,9 +13,21 @@ import (
 	"sync"
 )
 
+// gobFormatVersion is bumped whenever the on-disk layout of gobFile changes.
+const gobFormatVersion = 1
+
+// gobFile is the on-disk envelope. Versioning it lets Load reject stale indexes
+// with a clear message instead of a gob decoding error.
+type gobFile struct {
+	FormatVersion int
+	Meta          IndexMeta
+	Records       []Record
+}
+
 // GobStore implements the Store interface using an in-memory slice backed by a gob file.
 type GobStore struct {
 	mu      sync.RWMutex
+	meta    IndexMeta
 	records []Record
 }
 
@@ -36,7 +48,23 @@ func (s *GobStore) Add(records []Record) error {
 	return nil
 }
 
+// SetMeta records how the index was built.
+func (s *GobStore) SetMeta(meta IndexMeta) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.meta = meta
+}
+
+// Meta returns how the index was built.
+func (s *GobStore) Meta() IndexMeta {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.meta
+}
+
 // Search performs brute-force cosine similarity across all stored records.
+// A dimension mismatch is an error: it means the query was embedded with a different
+// model than the index, and silently skipping records would just return nothing.
 func (s *GobStore) Search(queryVec []float32, topK int) ([]ScoredRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -46,7 +74,7 @@ func (s *GobStore) Search(queryVec []float32, topK int) ([]ScoredRecord, error) 
 	for _, rec := range s.records {
 		score, err := cosineSimilarity(queryVec, rec.Vector)
 		if err != nil {
-			continue // skip mismatched dimensions
+			return nil, fmt.Errorf("record %s: %w", rec.Chunk.ID, err)
 		}
 		results = append(results, ScoredRecord{
 			Record: rec,
@@ -83,7 +111,8 @@ func (s *GobStore) Save(path string) error {
 	defer file.Close()
 
 	encoder := gob.NewEncoder(file)
-	if err := encoder.Encode(s.records); err != nil {
+	payload := gobFile{FormatVersion: gobFormatVersion, Meta: s.meta, Records: s.records}
+	if err := encoder.Encode(payload); err != nil {
 		return fmt.Errorf("failed to encode records: %w", err)
 	}
 
@@ -104,10 +133,12 @@ func (s *GobStore) Load(path string) error {
 	}
 	defer file.Close()
 
-	decoder := gob.NewDecoder(file)
-	if err := decoder.Decode(&s.records); err != nil {
-		return fmt.Errorf("failed to decode records: %w", err)
+	var payload gobFile
+	if err := gob.NewDecoder(file).Decode(&payload); err != nil || payload.FormatVersion != gobFormatVersion {
+		return fmt.Errorf("index at %s is outdated or corrupt, re-run 'semcode index'", path)
 	}
+	s.meta = payload.Meta
+	s.records = payload.Records
 
 	return nil
 }
